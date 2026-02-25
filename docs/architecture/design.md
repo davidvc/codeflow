@@ -34,7 +34,7 @@ graph TB
     subgraph Domain["Domain Core"]
         WT[Workflow Templates]
         TI[Template Instantiation]
-        ES[Execution Session]
+        EXE[Workflow Executor]
     end
 
     subgraph Ports["Port Interfaces"]
@@ -47,70 +47,22 @@ graph TB
         EVP[Event Stream Port]
     end
 
-    subgraph Adapters["Adapter Implementations"]
-        subgraph TaskAdapters["Task Backend"]
-            BA[Beads]
-            LA[Linear]
-            JA[Jira]
-            CA1[Custom]
-        end
+    %% Executor interactions with ports
+    EXE -->|query ready tasks| TBP
+    EXE -->|execute tasks| AEP
+    EXE -->|create workspaces| WIP
+    EXE -->|create branches| VOP
+    EXE -->|merge steps| SMP
+    EXE -->|merge workflows| WMP
+    EXE -->|send events| EVP
 
-        subgraph AgentAdapters["Agent Executor"]
-            CCA[Claude Code]
-            AIA[Aider]
-            CUR[Cursor]
-            CA2[Custom]
-        end
-
-        subgraph WorkspaceAdapters["Workspace"]
-            GWA[Git Worktree]
-            DCA[Docker Container]
-            CA3[Custom]
-        end
-
-        subgraph VCSAdapters["VCS Operations"]
-            GIT[Git + GitHub]
-            GLB[GitLab]
-            BB[Bitbucket]
-            MOCK[Mock]
-        end
-
-        subgraph StepMergeAdapters["Step Merge Policy"]
-            SMA1[Auto Merge]
-            SMA2[PR + Merge]
-            SMA3[PR + Notify]
-        end
-
-        subgraph WorkflowMergeAdapters["Workflow Merge Policy"]
-            WMA1[Auto Merge]
-            WMA2[PR + Merge]
-            WMA3[PR + Notify]
-        end
-
-        subgraph EventAdapters["Event Stream"]
-            EVA1[Stdout]
-            EVA2[File]
-            EVA3[HTTP]
-            EVA4[Custom]
-        end
-    end
-
-    Domain --> Ports
-    TBP --> TaskAdapters
-    AEP --> AgentAdapters
-    WIP --> WorkspaceAdapters
-    VOP --> VCSAdapters
-    SMP --> StepMergeAdapters
-    WMP --> WorkflowMergeAdapters
-    EVP --> EventAdapters
-
-    %% Merge policies depend on VCS Port
-    SMP -.depends on.-> VOP
-    WMP -.depends on.-> VOP
+    %% Port dependencies
+    SMP -.uses.-> VOP
+    WMP -.uses.-> VOP
 
     style Domain fill:#e1f5ff
     style Ports fill:#fff4e1
-    style Adapters fill:#f0f0f0
+    style EXE fill:#ffcccc
     style VOP fill:#ffe1e1
     style SMP fill:#e1ffe1
     style WMP fill:#e1ffe1
