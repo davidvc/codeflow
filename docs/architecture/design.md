@@ -32,12 +32,12 @@ The system follows hexagonal (ports and adapters) architecture:
 ```mermaid
 graph TB
     subgraph Domain["Domain Core"]
-        WT[Workflow Templates]
-        TI[Template Instantiation]
         EXE[Workflow Executor]
     end
 
     subgraph Ports["Port Interfaces"]
+        TMP[Template Management Port]
+        TIP[Template Instantiation Port]
         TBP[Task Backend Port]
         AEP[Agent Executor Port]
         WIP[Workspace Isolation Port]
@@ -48,6 +48,8 @@ graph TB
     end
 
     %% Executor interactions with ports
+    EXE -->|load templates| TMP
+    EXE -->|instantiate workflow| TIP
     EXE -->|query ready tasks| TBP
     EXE -->|execute tasks| AEP
     EXE -->|create workspaces| WIP
@@ -57,12 +59,16 @@ graph TB
     EXE -->|send events| EVP
 
     %% Port dependencies
+    TIP -.uses.-> TMP
+    TIP -.uses.-> TBP
     SMP -.uses.-> VOP
     WMP -.uses.-> VOP
 
     style Domain fill:#e1f5ff
     style Ports fill:#fff4e1
     style EXE fill:#ffcccc
+    style TMP fill:#ffe1ff
+    style TIP fill:#ffe1ff
     style VOP fill:#ffe1e1
     style SMP fill:#e1ffe1
     style WMP fill:#e1ffe1
@@ -88,56 +94,149 @@ graph TB
 
 ## Core Components
 
-### 1. Workflow Templates
+### 1. Template Management Port
 
-**Purpose**: Define reusable, parameterized workflow patterns
+**Purpose**: Abstract interface for template storage and retrieval
 
-**Responsibilities**:
-- Define task sequence and dependencies
-- Specify per-task instructions and context
-- Support parameterization for customization
-- Validation of template structure
+**Interface Operations**:
+- `getTemplate(templateId)`: Retrieve template by ID
+- `listTemplates(filter)`: List available templates with optional filtering
+- `validateTemplate(template)`: Validate template structure and semantics
+- `saveTemplate(template)`: Store new or updated template
+- `deleteTemplate(templateId)`: Remove template
+- `getTemplateVersions(templateId)`: List versions of a template
+- `getTemplateVersion(templateId, version)`: Retrieve specific version
 
-**Key Concepts**:
-- **Template Definition**: YAML/JSON structure defining tasks, dependencies, parameters
-- **Parameters**: Variables that can be bound during instantiation
-- **Task Specification**: Instructions, acceptance criteria, context for each task
-- **Dependency Declaration**: DAG structure using task IDs
+**Key Properties**:
+- Template storage abstraction
+- Version management
+- Schema validation
+- Template discovery
+- Metadata management
 
-**Example Template Structure**:
+**Template Structure**:
+```yaml
+template:
+  id: string
+  version: string
+  name: string
+  description: string
+  author: string
+  parameters:
+    - name: string
+      type: string
+      description: string
+      default: any
+      required: boolean
+  tasks:
+    - id: string
+      title: string
+      instructions: string
+      acceptance_criteria: string[]
+      depends_on: string[]
+      context_variables: map<string, string>
+      metadata: map<string, any>
 ```
-Template:
-  - name
-  - description
-  - parameters
-  - tasks:
-      - id
-      - title
-      - instructions
-      - acceptance_criteria
-      - depends_on: [task_ids]
-      - context_variables
-```
 
-### 2. Template Instantiation
+**Why a Port?**:
+- Templates could be stored in files (YAML/JSON in repo)
+- Templates could be stored in a database
+- Templates could be fetched from a remote registry
+- Templates could be embedded in code
+- Enables template versioning and management strategies
 
-**Purpose**: Convert templates into concrete task instances
+### 2. Template Management Adapters
 
-**Responsibilities**:
-- Bind template parameters to values
-- Create concrete tasks in backend
-- Establish dependency relationships
-- Generate unique instance identifiers
+**File System Adapter** (Primary Implementation):
+- Reads templates from `.codeflow/templates/` directory
+- Templates are YAML or JSON files
+- Simple versioning via git
+- Easy to edit and version control
+- Template discovery via file scanning
 
-**Process**:
-1. Validate template structure
-2. Bind parameters with user-provided values
-3. Generate task instances with interpolated content
-4. Create tasks in backend via Task Backend Port
-5. Establish dependencies to form DAG
-6. Return workflow instance identifier
+**Template Registry Adapter**:
+- Fetches templates from remote registry/API
+- Supports semantic versioning
+- Template marketplace/sharing
+- Centralized template management
+- Access control and permissions
 
-### 3. Task Backend Port
+**Database Adapter**:
+- Stores templates in database (PostgreSQL, MongoDB)
+- Advanced querying and filtering
+- Fine-grained version control
+- Audit trails
+- Multi-tenant support
+
+**In-Memory Adapter** (for testing):
+- Templates stored in memory
+- No persistence
+- Fast for unit tests
+- Predictable test environment
+
+### 3. Template Instantiation Port
+
+**Purpose**: Abstract interface for converting templates into concrete workflow instances
+
+**Interface Operations**:
+- `instantiateTemplate(templateId, parameters)`: Create workflow from template
+- `validateParameters(templateId, parameters)`: Validate parameter values
+- `previewInstantiation(templateId, parameters)`: Preview tasks without creating
+- `getInstantiationHistory(workflowId)`: Get template and parameters used
+- `reInstantiate(workflowId)`: Create new instance with same template/parameters
+
+**Key Properties**:
+- Parameter binding and validation
+- Template interpolation
+- Task creation orchestration
+- Dependency graph construction
+- Workflow initialization
+
+**Instantiation Process**:
+1. Load template via Template Management Port
+2. Validate parameter schema
+3. Bind parameters to template variables
+4. Interpolate task instructions, titles, and context
+5. Create tasks in backend via Task Backend Port
+6. Establish dependencies to form DAG
+7. Create workflow branch via VCS Port
+8. Return workflow instance identifier
+
+**Why a Port?**:
+- Different parameter binding strategies
+- Custom validation rules
+- Pre/post-instantiation hooks
+- Different task creation strategies (batch vs. incremental)
+- Enables A/B testing of instantiation approaches
+
+### 4. Template Instantiation Adapters
+
+**Standard Instantiation Adapter** (Primary Implementation):
+- Simple parameter substitution using template syntax (e.g., `{{param}}`)
+- Validates all required parameters provided
+- Creates all tasks upfront in single batch
+- Establishes dependencies in backend
+- Emits instantiation event
+
+**Lazy Instantiation Adapter**:
+- Creates tasks incrementally as they become ready
+- Useful for very large workflows
+- Reduces upfront overhead
+- Enables dynamic task generation based on previous results
+
+**Interactive Instantiation Adapter**:
+- Prompts user for parameter values during instantiation
+- Supports parameter validation with user feedback
+- Allows conditional task inclusion
+- Human-in-the-loop workflow customization
+
+**Test Instantiation Adapter**:
+- Uses mock backends
+- Validates template structure without creating real tasks
+- Dry-run mode for testing templates
+- Generates instantiation reports
+
+### 5. Task Backend Port
 
 **Purpose**: Abstract interface for task persistence and management
 
@@ -158,7 +257,7 @@ Template:
 - Query capabilities for DAG traversal
 - Atomic operations for concurrency safety
 
-### 4. Backend Adapters
+### 6. Backend Adapters
 
 **Beads Adapter** (Primary Implementation):
 - Maps port operations to beads CLI commands
@@ -177,7 +276,7 @@ Template:
 - Handle backend-specific error cases
 - Map domain concepts to backend data model
 
-### 5. Coding Agent Port
+### 7. Coding Agent Port
 
 **Purpose**: Abstract interface for executing tasks with AI agents
 
@@ -194,7 +293,7 @@ Template:
 - Error handling
 - Session isolation
 
-### 6. Agent Adapters
+### 8. Agent Adapters
 
 **Claude Code Adapter** (Primary Implementation):
 - Spawn fresh claude CLI session per task
@@ -214,7 +313,7 @@ Template:
 - Output parsing and result extraction
 - Error detection and reporting
 
-### 7. Workspace Isolation Port
+### 9. Workspace Isolation Port
 
 **Purpose**: Abstract interface for providing isolated workspaces for task execution
 
@@ -240,7 +339,7 @@ Template:
 - **Merge Control**: Explicit control over when and how changes integrate
 - **Reproducibility**: Each task operates on a specific code snapshot
 
-### 8. Workspace Adapters
+### 10. Workspace Adapters
 
 **Git Worktree Adapter** (Primary Implementation):
 - Uses `git worktree add` to create isolated working directories
@@ -269,7 +368,7 @@ Template:
 - Clean up resources
 - Track workspace state
 
-### 9. VCS Operations Port
+### 11. VCS Operations Port
 
 **Purpose**: Abstract interface for low-level version control operations
 
@@ -299,7 +398,7 @@ Template:
 - Enables testing with mock VCS
 - Future-proofs against VCS changes (though git is dominant)
 
-### 10. VCS Adapters
+### 12. VCS Adapters
 
 **Git Adapter** (Primary Implementation):
 - Uses git CLI commands (`git branch`, `git merge`, `git push`)
@@ -325,7 +424,7 @@ Template:
 - Handle VCS-specific errors
 - Map VCS concepts to port abstractions
 
-### 11. Step Merge Policy Port
+### 13. Step Merge Policy Port
 
 **Purpose**: Abstract interface for *policy* around merging completed task branches into workflow branch
 
@@ -355,7 +454,7 @@ Template:
 5. On success: step branch merged to workflow branch
 6. Cleanup: remove step branch via VCS Port
 
-### 12. Step Merge Policy Adapters
+### 14. Step Merge Policy Adapters
 
 All policy adapters depend on the VCS Operations Port for actual VCS interactions.
 
@@ -400,7 +499,7 @@ All policy adapters depend on the VCS Operations Port for actual VCS interaction
 - Notify users via Event Port
 - Clean up branches via VCS Port
 
-### 13. Workflow Merge Policy Port
+### 15. Workflow Merge Policy Port
 
 **Purpose**: Abstract interface for *policy* around merging completed workflow branch into main/target branch
 
@@ -430,7 +529,7 @@ All policy adapters depend on the VCS Operations Port for actual VCS interaction
 6. On success: workflow merged to main/target
 7. Workflow marked complete
 
-### 14. Workflow Merge Policy Adapters
+### 16. Workflow Merge Policy Adapters
 
 All policy adapters depend on the VCS Operations Port for actual VCS interactions.
 
@@ -464,7 +563,7 @@ All policy adapters depend on the VCS Operations Port for actual VCS interaction
 - No PR, no gates
 - Call VCS Port: `mergeBranch(workflow/<workflow-id>, main)`
 
-### 15. Branching Strategy
+### 17. Branching Strategy
 
 **Branch Hierarchy**:
 ```
@@ -492,7 +591,7 @@ main (production)
 - Clear history of workflow progress
 - Parallel task execution safety
 
-### 16. Merge Failure Handling
+### 18. Merge Failure Handling
 
 **Purpose**: Automated recovery from merge failures
 
@@ -525,7 +624,7 @@ main (production)
 - Reports back via task completion
 - Bounded retry attempts (configurable)
 
-### 17. Execution Engine
+### 19. Execution Engine
 
 **Purpose**: Orchestrate DAG-based workflow execution
 
@@ -872,6 +971,22 @@ while workflow has incomplete tasks:
 - Con: Slower, requires manual intervention
 
 ## Extension Points
+
+### Custom Template Management
+Implement Template Management Port for:
+- Remote template registries/marketplaces
+- Database-backed template storage
+- Git-based template versioning
+- Enterprise template governance
+- Template access control and permissions
+
+### Custom Template Instantiation
+Implement Template Instantiation Port for:
+- Advanced parameter binding (ML-based suggestions)
+- Conditional task inclusion logic
+- Dynamic task generation based on context
+- Interactive parameter collection
+- Template composition (nested templates)
 
 ### Custom Backends
 Implement Task Backend Port for:

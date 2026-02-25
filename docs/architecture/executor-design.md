@@ -65,6 +65,8 @@ graph TB
     end
 
     subgraph Ports["External Ports"]
+        TMP[Template Management Port]
+        TIP[Template Instantiation Port]
         TBP[Task Backend Port]
         AEP[Agent Executor Port]
         WIP[Workspace Port]
@@ -75,6 +77,8 @@ graph TB
     end
 
     %% Workflow Manager interactions
+    WM -->|load template| TMP
+    WM -->|instantiate| TIP
     WM -->|initialize workflow| VOP
     WM -->|track progress| TBP
     WM -->|final merge| WMP
@@ -131,6 +135,10 @@ graph TB
 **Interface**:
 ```typescript
 interface WorkflowManager {
+  // Template operations
+  loadTemplate(templateId: string, version?: string): Template
+  instantiateWorkflow(templateId: string, parameters: Map<string, any>): string
+
   // Lifecycle
   initializeWorkflow(workflowId: string, baseBranch: string): WorkflowContext
   getWorkflowStatus(workflowId: string): WorkflowStatus
@@ -146,10 +154,19 @@ interface WorkflowManager {
 
 **Key Operations**:
 
+**Instantiate Workflow**:
+1. Load template via Template Management Port
+2. Validate parameters against template schema
+3. Invoke Template Instantiation Port to create workflow instance:
+   - Bind parameters to template variables
+   - Create tasks in Task Backend Port
+   - Establish dependencies
+4. Return workflow ID
+
 **Initialize Workflow**:
-1. Validate workflow template and parameters
+1. Retrieve workflow metadata from Task Backend
 2. Create workflow branch via VCS Port: `workflow/<workflow-id>` from main
-3. Create workflow tracking record in Task Backend
+3. Update workflow status to 'running' in Task Backend
 4. Emit workflow started event
 5. Return workflow context for execution
 
@@ -494,12 +511,20 @@ enum EventType {
 ### Main Execution Loop
 
 ```typescript
-async function executeWorkflow(workflowId: string): Promise<WorkflowResult> {
-  // Phase 1: Initialization
+async function executeWorkflow(
+  templateId: string,
+  parameters: Map<string, any>
+): Promise<WorkflowResult> {
+  // Phase 0: Template Instantiation
+  const template = workflowManager.loadTemplate(templateId)
+  const workflowId = workflowManager.instantiateWorkflow(templateId, parameters)
+
+  // Phase 1: Workflow Initialization
   const context = workflowManager.initializeWorkflow(workflowId, 'main')
   eventPublisher.publishEvent({
     type: EventType.WorkflowStarted,
     workflowId,
+    templateId,
     timestamp: Date.now()
   })
 
