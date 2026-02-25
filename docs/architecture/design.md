@@ -30,31 +30,43 @@ All layers use pluggable interfaces to support multiple implementations.
 The system follows hexagonal (ports and adapters) architecture:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         Domain Core                          │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐   │
-│  │  Workflow   │  │   Template   │  │   Execution      │   │
-│  │  Templates  │  │ Instantiation│  │   Session        │   │
-│  └─────────────┘  └──────────────┘  └──────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        │                     │                     │
-   ┌────▼────┐           ┌────▼────┐           ┌────▼────┐
-   │  Port:  │           │  Port:  │           │  Port:  │
-   │  Task   │           │  Agent  │           │  Event  │
-   │ Backend │           │Executor │           │ Stream  │
-   └────┬────┘           └────┬────┘           └────┬────┘
-        │                     │                     │
-   ┌────┴────────┐       ┌────┴─────────┐     ┌────┴─────┐
-   │   Adapters  │       │   Adapters   │     │ Adapters │
-   │             │       │              │     │          │
-   │ • Beads     │       │ • Claude     │     │ • Stdout │
-   │ • Linear    │       │   Code       │     │ • File   │
-   │ • Jira      │       │ • Aider      │     │ • HTTP   │
-   │ • Custom    │       │ • Cursor     │     │ • Custom │
-   └─────────────┘       │ • Custom     │     └──────────┘
-                         └──────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                          Domain Core                              │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐        │
+│  │  Workflow   │  │   Template   │  │   Execution      │        │
+│  │  Templates  │  │ Instantiation│  │   Session        │        │
+│  └─────────────┘  └──────────────┘  └──────────────────┘        │
+└──────────────────────────────────────────────────────────────────┘
+                                │
+        ┌───────┬───────┬───────┼────────┬────────┬────────┬───────┐
+        │       │       │       │        │        │        │       │
+   ┌────▼───┐┌─▼──┐┌───▼──┐┌───▼───┐┌───▼──┐┌────▼───┐┌───▼──┐┌──▼───┐
+   │ Port:  ││Port││Port: ││ Port: ││Port: ││ Port:  ││Port: ││Port: │
+   │  Task  ││Agent││Work- ││  VCS  ││ Step ││Workflow││Event ││ ...  │
+   │Backend ││Exec ││space ││  Ops  ││Merge ││ Merge  ││Stream││      │
+   └────┬───┘└─┬──┘└───┬──┘└───┬───┘└───┬──┘└────┬───┘└───┬──┘└──────┘
+        │      │       │       │     ▲  │     ▲  │        │
+   ┌────┴──┐┌──┴──┐┌──┴───┐┌──┴───┐ │  │     │  │   ┌────┴───┐
+   │Adapter││Adapt││Adapter││Adapter│ │  │     │  │   │Adapter │
+   │       ││     ││       ││       │ │  │     │  │   │        │
+   │•Beads ││•Clde││• Git  ││• Git  │ └──┼─────┘  │   │•Stdout │
+   │•Linear││ Code││Worktee││       │    │        │   │• File  │
+   │•Jira  ││•Aider│• Docker│• Mock │    │        │   │• HTTP  │
+   │•Custom││•Cursor│Custom ││•GitLab│    │        │   │•Custom │
+   │       ││•Custom│       ││•Bitbkt│    │        │   │        │
+   └───────┘└─────┘└───────┘└───────┘    │        │   └────────┘
+                                          │        │
+                                    ┌─────┴────┐┌──┴──────┐
+                                    │ Adapters ││Adapters │
+                                    │          ││         │
+                                    │• Auto    ││• Auto   │
+                                    │• PR+Merge││• PR+Mrg │
+                                    │• PR+     ││• PR+    │
+                                    │  Notify  ││  Notify │
+                                    └──────────┘└─────────┘
+
+                 Step & Workflow Merge Policies
+                 depend on VCS Operations Port
 ```
 
 ### Architectural Layers
@@ -203,7 +215,318 @@ Template:
 - Output parsing and result extraction
 - Error detection and reporting
 
-### 7. Execution Engine
+### 7. Workspace Isolation Port
+
+**Purpose**: Abstract interface for providing isolated workspaces for task execution
+
+**Interface Operations**:
+- `createWorkspace(taskId, baseRef)`: Create isolated workspace for task
+- `getWorkspacePath(workspaceId)`: Get filesystem path to workspace
+- `commitChanges(workspaceId, message)`: Commit changes made in workspace
+- `mergeWorkspace(workspaceId, targetBranch)`: Merge workspace changes to target
+- `destroyWorkspace(workspaceId)`: Clean up workspace resources
+- `getWorkspaceStatus(workspaceId)`: Get workspace state and changes
+
+**Key Properties**:
+- Filesystem isolation per task
+- Independent working directories
+- Conflict-free parallel execution
+- Change tracking and versioning
+- Clean separation of task artifacts
+
+**Why Workspace Isolation?**
+- **Parallel Execution**: Multiple tasks can run simultaneously without file conflicts
+- **Clean State**: Each task starts with a known, clean codebase state
+- **Rollback Safety**: Failed tasks don't pollute the main workspace
+- **Merge Control**: Explicit control over when and how changes integrate
+- **Reproducibility**: Each task operates on a specific code snapshot
+
+### 8. Workspace Adapters
+
+**Git Worktree Adapter** (Primary Implementation):
+- Uses `git worktree add` to create isolated working directories
+- Each worktree is a full checkout on a separate branch
+- Changes can be committed and merged independently
+- Automatic cleanup of worktrees after task completion
+- Leverages git's native isolation mechanisms
+
+**Implementation Details**:
+- Creates worktree in `.codeflow/worktrees/<task-id>/`
+- Checks out new branch `task/<task-id>` from base reference
+- Agent executes within worktree directory
+- On success: merge to main branch, remove worktree
+- On failure: preserve worktree for debugging, allow manual cleanup
+
+**Other Potential Adapters**:
+- Docker container adapter (full OS-level isolation)
+- Directory copy adapter (simple filesystem copy)
+- Virtual environment adapter (Python/Node-specific)
+- Remote workspace adapter (cloud-based execution)
+
+**Adapter Responsibilities**:
+- Create isolated working environment
+- Manage workspace lifecycle
+- Handle merge/integration operations
+- Clean up resources
+- Track workspace state
+
+### 9. VCS Operations Port
+
+**Purpose**: Abstract interface for low-level version control operations
+
+**Interface Operations**:
+- `createBranch(name, baseBranch)`: Create new branch
+- `mergeBranch(sourceBranch, targetBranch)`: Perform merge operation
+- `deleteBranch(name)`: Delete branch
+- `getBranchStatus(name)`: Get branch state
+- `hasConflicts(sourceBranch, targetBranch)`: Check for merge conflicts
+- `getConflicts(sourceBranch, targetBranch)`: Get conflict details
+- `createPullRequest(source, target, title, body)`: Create PR/MR
+- `getPullRequestStatus(prId)`: Get PR state
+- `getPullRequestChecks(prId)`: Get CI/CD check results
+- `mergePullRequest(prId)`: Merge PR
+- `closePullRequest(prId)`: Close PR without merging
+
+**Key Properties**:
+- VCS-agnostic operations
+- Branch management
+- Pull request/merge request abstraction
+- Conflict detection
+- Check status monitoring
+
+**Why Separate VCS Port?**
+- Merge policies focus on *when* and *how* to merge (business logic)
+- VCS port handles *actual* merge operations (infrastructure)
+- Enables testing with mock VCS
+- Future-proofs against VCS changes (though git is dominant)
+
+### 10. VCS Adapters
+
+**Git Adapter** (Primary Implementation):
+- Uses git CLI commands (`git branch`, `git merge`, `git push`)
+- Integrates with GitHub via `gh` CLI for PR operations
+- Detects conflicts via merge output
+- Maps git concepts to port interface
+
+**Implementation Details**:
+- `createBranch()` → `git branch <name> <base>`
+- `mergeBranch()` → `git merge <source>`
+- `createPullRequest()` → `gh pr create --base <target> --head <source>`
+- `getPullRequestChecks()` → `gh pr checks <pr-id>`
+- `mergePullRequest()` → `gh pr merge <pr-id>`
+
+**Other Potential Adapters**:
+- GitLab adapter (uses `glab` CLI)
+- Bitbucket adapter (uses `bb` CLI or API)
+- Mock adapter (for testing)
+
+**Adapter Responsibilities**:
+- Execute VCS commands
+- Parse VCS output
+- Handle VCS-specific errors
+- Map VCS concepts to port abstractions
+
+### 11. Step Merge Policy Port
+
+**Purpose**: Abstract interface for *policy* around merging completed task branches into workflow branch
+
+**Interface Operations**:
+- `mergeStep(stepBranch, workflowBranch, taskContext)`: Execute merge policy for step
+- `getMergeStatus(mergeId)`: Check status of merge operation
+- `handleMergeFailure(mergeId, error)`: Handle merge conflicts or failures
+- `cancelMerge(mergeId)`: Cancel pending merge
+
+**Key Properties**:
+- Policy-driven merge strategies (when/how to merge)
+- Depends on VCS Operations Port for actual merging
+- CI/CD integration support
+- Automated quality gates
+- Conflict detection and resolution
+- Separate agent session for merge operations
+
+**Merge Lifecycle**:
+1. Task completes successfully in its workspace
+2. Merge policy invoked with step branch and workflow branch
+3. Policy executes strategy using VCS Port:
+   - Check for conflicts via VCS Port
+   - Create PR via VCS Port (or direct merge)
+   - Monitor checks via VCS Port
+   - Merge via VCS Port
+4. If checks fail: spawn fix agent to resolve issues
+5. On success: step branch merged to workflow branch
+6. Cleanup: remove step branch via VCS Port
+
+### 12. Step Merge Policy Adapters
+
+All policy adapters depend on the VCS Operations Port for actual VCS interactions.
+
+**PR and Notify Policy** (Primary/Default Implementation):
+- Creates pull request from step branch to workflow branch via VCS Port
+- Waits for CI/CD checks to complete (polls via VCS Port)
+- If checks pass: notifies user via Event Port, waits for approval or auto-merges
+- If checks fail: spawns new agent session to fix failures
+- Uses VCS Port exclusively for git/PR operations
+
+**Implementation Flow**:
+1. Call VCS Port: `createPullRequest(task/<task-id>, workflow/<workflow-id>)`
+2. Poll VCS Port: `getPullRequestChecks(prId)` until complete
+3. If checks fail:
+   - Create new task via Task Backend Port: "Fix CI failures for task-X"
+   - Return failure status
+4. If checks pass:
+   - Notify via Event Port
+   - Wait for user approval (or auto-merge based on config)
+   - Call VCS Port: `mergePullRequest(prId)`
+5. Call VCS Port: `deleteBranch(task/<task-id>)`
+
+**PR and Merge Policy**:
+- Creates pull request with auto-merge enabled
+- Waits for checks to pass via VCS Port
+- Automatically merges when all checks green (no approval)
+- If checks fail: spawn fix agent
+- Uses VCS Port for all operations
+
+**Auto Merge Policy**:
+- Directly merges step branch to workflow branch via VCS Port
+- No PR created
+- No CI/CD gates
+- Fast but risky (useful for development/testing)
+- Call VCS Port: `mergeBranch(task/<task-id>, workflow/<workflow-id>)`
+
+**Adapter Responsibilities**:
+- Implement merge strategy (business logic)
+- Orchestrate VCS operations via VCS Port (not direct VCS calls)
+- Monitor CI/CD check status via VCS Port
+- Spawn fix agents on failure via Task Backend Port
+- Notify users via Event Port
+- Clean up branches via VCS Port
+
+### 13. Workflow Merge Policy Port
+
+**Purpose**: Abstract interface for *policy* around merging completed workflow branch into main/target branch
+
+**Interface Operations**:
+- `mergeWorkflow(workflowBranch, targetBranch, workflowContext)`: Execute merge policy for workflow
+- `getMergeStatus(mergeId)`: Check status of workflow merge
+- `handleMergeFailure(mergeId, error)`: Handle workflow-level merge issues
+- `cancelMerge(mergeId)`: Cancel pending workflow merge
+
+**Key Properties**:
+- Workflow-level quality gates
+- Depends on VCS Operations Port for actual merging
+- Final integration point
+- Production readiness checks
+- Separate agent for workflow-level fixes
+
+**Workflow Merge Lifecycle**:
+1. All workflow tasks complete
+2. Workflow branch contains all merged steps
+3. Workflow merge policy invoked
+4. Policy executes strategy using VCS Port:
+   - Check for conflicts via VCS Port
+   - Create final PR via VCS Port
+   - Monitor checks via VCS Port
+   - Merge via VCS Port
+5. If checks fail: spawn fix agent for workflow-level issues
+6. On success: workflow merged to main/target
+7. Workflow marked complete
+
+### 14. Workflow Merge Policy Adapters
+
+All policy adapters depend on the VCS Operations Port for actual VCS interactions.
+
+**PR and Notify Policy** (Primary/Default Implementation):
+- Creates final PR from workflow branch to main via VCS Port
+- Runs full CI/CD suite (monitored via VCS Port)
+- Waits for all checks
+- Notifies user when checks pass via Event Port
+- Requires approval before merge
+- If checks fail: spawn workflow-level fix agent
+
+**Implementation Flow**:
+1. Call VCS Port: `createPullRequest(workflow/<workflow-id>, main)`
+2. Poll VCS Port: `getPullRequestChecks(prId)` until complete
+3. If checks fail:
+   - Create workflow fix task via Task Backend Port
+   - Return failure status
+4. If checks pass:
+   - Notify via Event Port
+   - Wait for user approval
+   - Call VCS Port: `mergePullRequest(prId)`
+5. Call VCS Port: `deleteBranch(workflow/<workflow-id>)` (optional)
+
+**PR and Merge Policy**:
+- Creates PR with auto-merge via VCS Port
+- Merges when checks pass (no approval)
+- All operations via VCS Port
+
+**Auto Merge Policy**:
+- Direct merge to main via VCS Port
+- No PR, no gates
+- Call VCS Port: `mergeBranch(workflow/<workflow-id>, main)`
+
+### 15. Branching Strategy
+
+**Branch Hierarchy**:
+```
+main (production)
+  └─ workflow/<workflow-id> (workflow branch)
+       ├─ task/<task-1-id> (step branch in worktree)
+       ├─ task/<task-2-id> (step branch in worktree)
+       └─ task/<task-n-id> (step branch in worktree)
+```
+
+**Workflow Lifecycle**:
+1. **Workflow Start**: Create `workflow/<workflow-id>` branch from main
+2. **Task Execution**: Each task works in `task/<task-id>` branch (in worktree)
+3. **Step Merge**: Task branch merged to workflow branch via Step Merge Policy
+4. **Workflow Completion**: All tasks complete, workflow branch merged to main via Workflow Merge Policy
+
+**Merge Flow**:
+- **Task → Workflow**: Step Merge Policy controls integration
+- **Workflow → Main**: Workflow Merge Policy controls final integration
+
+**Benefits**:
+- Isolated feature development
+- Quality gates at each level
+- Easy rollback of entire workflow
+- Clear history of workflow progress
+- Parallel task execution safety
+
+### 16. Merge Failure Handling
+
+**Purpose**: Automated recovery from merge failures
+
+**Step Merge Failures**:
+- Detected by Step Merge Policy adapter
+- Create new task: "Fix merge/CI failures for task-X"
+- Add dependency: blocked by original task
+- Spawn agent session with context:
+  - Original task intent
+  - CI/CD failure logs
+  - Merge conflict details
+- Agent fixes issues in workspace
+- Re-run merge policy
+- If still failing: escalate to user
+
+**Workflow Merge Failures**:
+- Detected by Workflow Merge Policy adapter
+- Create new task: "Fix workflow-level failures"
+- Spawn agent session with:
+  - Full workflow context
+  - Integration test failures
+  - Merge conflicts
+- Agent resolves workflow-level issues
+- Re-run workflow merge policy
+
+**Fix Agent Strategy**:
+- Fresh agent session (not part of original workflow)
+- Access to failure context
+- Can modify code, fix tests, resolve conflicts
+- Reports back via task completion
+- Bounded retry attempts (configurable)
+
+### 17. Execution Engine
 
 **Purpose**: Orchestrate DAG-based workflow execution
 
@@ -216,17 +539,45 @@ Template:
 
 **Execution Algorithm**:
 ```
-while workflow not complete:
-  1. Query backend for ready tasks (no open blockers)
-  2. Select next task (priority-based or user-defined)
-  3. Claim task atomically
-  4. Create fresh agent session
-  5. Execute task via Agent Port
-  6. Capture results
-  7. Update task status in backend
-  8. If task failed: retry or mark failed
-  9. If task succeeded: mark complete
-  10. Repeat
+# Phase 1: Workflow Initialization
+1. Create workflow branch from main: workflow/<workflow-id>
+
+# Phase 2: Task Execution Loop
+while workflow has incomplete tasks:
+  2. Query backend for ready tasks (no open blockers)
+  3. Select next task (priority-based or user-defined)
+  4. Claim task atomically
+  5. Create isolated workspace for task
+     - Create worktree with task branch: task/<task-id>
+     - Branch from current workflow branch
+  6. Create fresh agent session with workspace path
+  7. Execute task via Agent Port
+  8. Capture results
+
+  9. If task succeeded:
+     a. Commit changes in task workspace
+     b. Invoke Step Merge Policy:
+        - Merge task/<task-id> → workflow/<workflow-id>
+        - Wait for checks/approval based on policy
+        - If merge fails: create fix task, goto 2
+     c. Mark task complete in backend
+     d. Destroy workspace and task branch
+
+  10. If task failed:
+      a. Mark task failed in backend
+      b. Preserve workspace for debugging
+      c. Retry or create fix task
+
+  11. Repeat until all tasks complete
+
+# Phase 3: Workflow Completion
+12. Invoke Workflow Merge Policy:
+    - Merge workflow/<workflow-id> → main
+    - Wait for checks/approval based on policy
+    - If merge fails: create workflow fix task, goto 2
+13. Mark workflow complete in backend
+14. Cleanup workflow branch (optional)
+15. Send completion notification
 ```
 
 **Error Handling**:
@@ -275,24 +626,45 @@ while workflow not complete:
 
 ### Phase 3: Workflow Execution
 
-**Actor**: Execution Engine
+**Actor**: Execution Engine + Merge Policies
 
 **Activities**:
+- Create workflow branch
 - Loop: find ready tasks
 - Claim task
-- Spawn fresh agent session
+- Create isolated workspace with task branch
+- Spawn fresh agent session in workspace
 - Inject task context and instructions
 - Execute task
 - Capture results
+- Commit changes to task branch
+- **Invoke Step Merge Policy**
+  - Create PR (or auto-merge based on policy)
+  - Monitor CI/CD checks
+  - If checks fail: spawn fix agent
+  - If checks pass: notify/merge based on policy
 - Update task status
+- Clean up workspace and task branch
 - Handle errors
-- Repeat until complete
+- Repeat until all tasks complete
+- **Invoke Workflow Merge Policy**
+  - Create final PR to main
+  - Monitor CI/CD checks
+  - If checks fail: spawn workflow fix agent
+  - If checks pass: notify/merge based on policy
 
 **Artifacts**:
+- Workflow branch
+- Task branches (one per task)
+- Pull requests (step-level and workflow-level)
+- CI/CD check results
 - Execution logs
 - Task completion results
 - Artifacts produced by agents (code, docs, etc.)
+- Git commits per task
+- Merged branches
 - Error reports
+- Fix task records
 
 ### Phase 4: Monitoring & Intervention
 
@@ -335,7 +707,7 @@ while workflow not complete:
 ### 5. Interface Segregation
 - Focused, minimal port interfaces
 - Clients don't depend on unused operations
-- Task Backend Port vs Agent Port vs Event Port
+- Separate ports: Task Backend, Agent, Workspace, VCS, Step Merge, Workflow Merge, Event
 
 ### 6. Explicit over Implicit
 - Clear data flow
@@ -409,6 +781,97 @@ while workflow not complete:
 - Pro: Reusability, consistency
 - Con: Upfront template authoring cost
 
+### Decision 6: Workspace Isolation via Git Worktrees
+
+**Rationale**: Each task needs its own isolated filesystem to prevent conflicts during parallel execution and enable safe rollback.
+
+**Implications**:
+- Tasks execute in separate working directories
+- Git worktrees provide native version control integration
+- Requires git repository for default implementation
+- Merge strategy needed for integrating changes
+
+**Trade-offs**:
+- Pro: True isolation, parallel execution, git integration
+- Con: Disk space overhead, worktree management complexity
+
+**Alternative Implementations**:
+- Docker containers for full OS isolation
+- Simple directory copies for non-git projects
+- Cloud-based workspaces for distributed execution
+
+### Decision 7: Hierarchical Branching Strategy
+
+**Rationale**: Workflow branch acts as integration point for all task branches, enabling quality gates at step and workflow levels.
+
+**Implications**:
+- Each workflow gets dedicated branch
+- Each task gets dedicated branch (in worktree)
+- Two merge points: task→workflow, workflow→main
+- Clear separation of concerns
+
+**Trade-offs**:
+- Pro: Multiple quality gates, clear history, easy rollback
+- Con: More branches to manage, slower than direct-to-main
+
+### Decision 8: Two-Layer Merge Architecture
+
+**Rationale**: Separate policy (when/how to merge) from mechanism (actual VCS operations).
+
+**Implications**:
+- **Layer 1 (VCS Operations Port)**: Low-level VCS operations (git, PRs, branches)
+- **Layer 2 (Merge Policy Ports)**: High-level policy (auto, PR+notify, PR+merge)
+- Merge policies depend on VCS Port
+- Can swap VCS implementation independently of policy
+- Policies are VCS-agnostic (work with git, GitLab, Bitbucket)
+
+**Trade-offs**:
+- Pro: Clean separation, testability, flexibility
+- Con: Additional abstraction layer
+
+### Decision 9: Pluggable Merge Policies
+
+**Rationale**: Different teams have different quality/velocity trade-offs. Policies allow customization without changing core logic.
+
+**Implications**:
+- Separate ports for step merge vs workflow merge
+- Default: PR and notify (safest but slowest)
+- Can swap to auto-merge for speed (development)
+- Can require approval for production workflows
+- All policies use VCS Operations Port
+
+**Trade-offs**:
+- Pro: Flexibility, CI/CD integration, quality gates
+- Con: Complexity, slower execution with checks
+
+### Decision 10: Separate Merge Agent Sessions
+
+**Rationale**: Merge operations are distinct from task execution and may require fixing failures.
+
+**Implications**:
+- Merge not performed by task agent
+- Enables automated fix agents for merge failures
+- Clear separation of responsibilities
+- Fix agents have full context of failure
+
+**Trade-offs**:
+- Pro: Automated recovery, clear accountability
+- Con: Additional agent sessions, potential for fix loops
+
+### Decision 11: Default to PR and Notify
+
+**Rationale**: Safety first. Human oversight prevents bad merges reaching main.
+
+**Implications**:
+- All merges create PRs by default
+- User notified when checks pass
+- Requires GitHub/GitLab/Bitbucket integration
+- Can override with faster policies when needed
+
+**Trade-offs**:
+- Pro: Safety, code review opportunity, audit trail
+- Con: Slower, requires manual intervention
+
 ## Extension Points
 
 ### Custom Backends
@@ -422,6 +885,31 @@ Implement Coding Agent Port for:
 - Different AI coding tools
 - Human-in-the-loop execution
 - Hybrid AI+human workflows
+
+### Custom Workspaces
+Implement Workspace Isolation Port for:
+- Docker/Podman containers
+- Cloud-based development environments
+- Language-specific virtual environments
+- Remote execution environments
+
+### Custom VCS Operations
+Implement VCS Operations Port for:
+- GitLab (using glab CLI or API)
+- Bitbucket (using bb CLI or API)
+- Mock VCS (for testing)
+- Custom VCS systems
+
+### Custom Merge Policies
+Implement Step/Workflow Merge Policy Ports for:
+- Custom approval workflows
+- Advanced CI/CD integrations
+- Blue/green deployment strategies
+- Canary deployment patterns
+- Security scanning gates
+- Performance benchmark gates
+
+Note: All merge policies use VCS Operations Port, so they work with any VCS adapter.
 
 ### Custom Execution Strategies
 Extend Execution Engine for:
@@ -439,8 +927,10 @@ Add Event Port for:
 
 ### Task Isolation
 - Each agent session runs in isolation
-- Limit agent permissions
+- Isolated workspaces prevent cross-task contamination
+- Limit agent permissions to workspace boundaries
 - Sandbox execution environments
+- Git worktrees provide filesystem-level isolation
 
 ### Credential Management
 - Secure storage for API keys
@@ -484,6 +974,10 @@ The design successfully addresses the original problems if:
 4. **Pluggability**: New backends and agents can be added without core changes
 5. **Reusability**: Templates can be instantiated multiple times for different features
 6. **Parallelism**: Independent tasks execute concurrently
+7. **Quality Gates**: Step and workflow merges enforce CI/CD checks
+8. **Automated Recovery**: Merge failures trigger fix agents automatically
+9. **Isolation**: Each task executes in isolated workspace on isolated branch
+10. **Traceability**: Clear PR and commit history for audit
 
 ## Future Enhancements
 
@@ -514,4 +1008,15 @@ The design successfully addresses the original problems if:
 
 ## Conclusion
 
-This architecture provides a solid foundation for reliable, restartable, multi-step AI agent workflows. By separating concerns through hexagonal architecture and using pluggable interfaces, the system can evolve to support different backends and agents while maintaining a consistent execution model. The DAG-based approach enables parallel execution and explicit dependency management, solving the core problems of reliability and restartability.
+This architecture provides a solid foundation for reliable, restartable, multi-step AI agent workflows with robust quality gates. By separating concerns through hexagonal architecture and using pluggable interfaces, the system can evolve to support different backends, agents, and merge policies while maintaining a consistent execution model.
+
+Key architectural elements:
+- **DAG-based task dependencies** enable parallel execution and explicit ordering
+- **Fresh context per task** prevents hallucinations and context pollution
+- **Isolated workspaces** provide filesystem-level task isolation
+- **Hierarchical branching** (main → workflow → task) enables multi-level quality gates
+- **Pluggable merge policies** allow teams to balance quality vs velocity
+- **Automated fix agents** recover from merge and CI/CD failures
+- **Template-driven workflows** encode best practices and enable reuse
+
+This design solves the original three problems while adding enterprise-grade features like CI/CD integration, code review workflows, and automated failure recovery.
