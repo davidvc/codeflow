@@ -29,44 +29,91 @@ All layers use pluggable interfaces to support multiple implementations.
 
 The system follows hexagonal (ports and adapters) architecture:
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                          Domain Core                              │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐        │
-│  │  Workflow   │  │   Template   │  │   Execution      │        │
-│  │  Templates  │  │ Instantiation│  │   Session        │        │
-│  └─────────────┘  └──────────────┘  └──────────────────┘        │
-└──────────────────────────────────────────────────────────────────┘
-                                │
-        ┌───────┬───────┬───────┼────────┬────────┬────────┬───────┐
-        │       │       │       │        │        │        │       │
-   ┌────▼───┐┌─▼──┐┌───▼──┐┌───▼───┐┌───▼──┐┌────▼───┐┌───▼──┐┌──▼───┐
-   │ Port:  ││Port││Port: ││ Port: ││Port: ││ Port:  ││Port: ││Port: │
-   │  Task  ││Agent││Work- ││  VCS  ││ Step ││Workflow││Event ││ ...  │
-   │Backend ││Exec ││space ││  Ops  ││Merge ││ Merge  ││Stream││      │
-   └────┬───┘└─┬──┘└───┬──┘└───┬───┘└───┬──┘└────┬───┘└───┬──┘└──────┘
-        │      │       │       │     ▲  │     ▲  │        │
-   ┌────┴──┐┌──┴──┐┌──┴───┐┌──┴───┐ │  │     │  │   ┌────┴───┐
-   │Adapter││Adapt││Adapter││Adapter│ │  │     │  │   │Adapter │
-   │       ││     ││       ││       │ │  │     │  │   │        │
-   │•Beads ││•Clde││• Git  ││• Git  │ └──┼─────┘  │   │•Stdout │
-   │•Linear││ Code││Worktee││       │    │        │   │• File  │
-   │•Jira  ││•Aider│• Docker│• Mock │    │        │   │• HTTP  │
-   │•Custom││•Cursor│Custom ││•GitLab│    │        │   │•Custom │
-   │       ││•Custom│       ││•Bitbkt│    │        │   │        │
-   └───────┘└─────┘└───────┘└───────┘    │        │   └────────┘
-                                          │        │
-                                    ┌─────┴────┐┌──┴──────┐
-                                    │ Adapters ││Adapters │
-                                    │          ││         │
-                                    │• Auto    ││• Auto   │
-                                    │• PR+Merge││• PR+Mrg │
-                                    │• PR+     ││• PR+    │
-                                    │  Notify  ││  Notify │
-                                    └──────────┘└─────────┘
+```mermaid
+graph TB
+    subgraph Domain["Domain Core"]
+        WT[Workflow Templates]
+        TI[Template Instantiation]
+        ES[Execution Session]
+    end
 
-                 Step & Workflow Merge Policies
-                 depend on VCS Operations Port
+    subgraph Ports["Port Interfaces"]
+        TBP[Task Backend Port]
+        AEP[Agent Executor Port]
+        WIP[Workspace Isolation Port]
+        VOP[VCS Operations Port]
+        SMP[Step Merge Policy Port]
+        WMP[Workflow Merge Policy Port]
+        EVP[Event Stream Port]
+    end
+
+    subgraph Adapters["Adapter Implementations"]
+        subgraph TaskAdapters["Task Backend"]
+            BA[Beads]
+            LA[Linear]
+            JA[Jira]
+            CA1[Custom]
+        end
+
+        subgraph AgentAdapters["Agent Executor"]
+            CCA[Claude Code]
+            AIA[Aider]
+            CUR[Cursor]
+            CA2[Custom]
+        end
+
+        subgraph WorkspaceAdapters["Workspace"]
+            GWA[Git Worktree]
+            DCA[Docker Container]
+            CA3[Custom]
+        end
+
+        subgraph VCSAdapters["VCS Operations"]
+            GIT[Git + GitHub]
+            GLB[GitLab]
+            BB[Bitbucket]
+            MOCK[Mock]
+        end
+
+        subgraph StepMergeAdapters["Step Merge Policy"]
+            SMA1[Auto Merge]
+            SMA2[PR + Merge]
+            SMA3[PR + Notify]
+        end
+
+        subgraph WorkflowMergeAdapters["Workflow Merge Policy"]
+            WMA1[Auto Merge]
+            WMA2[PR + Merge]
+            WMA3[PR + Notify]
+        end
+
+        subgraph EventAdapters["Event Stream"]
+            EVA1[Stdout]
+            EVA2[File]
+            EVA3[HTTP]
+            EVA4[Custom]
+        end
+    end
+
+    Domain --> Ports
+    TBP --> TaskAdapters
+    AEP --> AgentAdapters
+    WIP --> WorkspaceAdapters
+    VOP --> VCSAdapters
+    SMP --> StepMergeAdapters
+    WMP --> WorkflowMergeAdapters
+    EVP --> EventAdapters
+
+    %% Merge policies depend on VCS Port
+    SMP -.depends on.-> VOP
+    WMP -.depends on.-> VOP
+
+    style Domain fill:#e1f5ff
+    style Ports fill:#fff4e1
+    style Adapters fill:#f0f0f0
+    style VOP fill:#ffe1e1
+    style SMP fill:#e1ffe1
+    style WMP fill:#e1ffe1
 ```
 
 ### Architectural Layers
